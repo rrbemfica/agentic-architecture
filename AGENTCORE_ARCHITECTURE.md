@@ -3,7 +3,7 @@
 ## Contexto
 
 - Comunicação 100% privada (sem tráfego pela internet)
-- **MCPs de domínios diferentes acessados exclusivamente via AgentCore Gateway**
+- **Todos os MCPs são acessados exclusivamente via AgentCore Gateway** (independente do domínio)
 - **Comunicação Agent-to-Agent (A2A) direta via AgentCore Runtime com OAuth 2.0**
 - Integração com recursos em VPC privada (RDS, ElastiCache, APIs internas)
 
@@ -13,10 +13,10 @@
 
 | Protocolo | Propósito | Porta | Via Gateway | Autenticação |
 |-----------|-----------|-------|-------------|--------------|
-| **MCP** | Agent → Tools | 8000 | Sim (cross-domain) | OAuth 2.0 (Cognito M2M) |
+| **MCP** | Agent → Tools | 8000 | **Sempre** | OAuth 2.0 (Cognito M2M) |
 | **A2A** | Agent → Agent | 9000 | Não (direto via Runtime) | OAuth 2.0 (Cognito M2M) |
 
-> **Importante**: O AgentCore Gateway suporta **somente MCP**. A comunicação A2A é feita diretamente entre Runtimes.
+> **Importante**: Todos os MCPs são acessados via AgentCore Gateway, independente do domínio. A comunicação A2A é feita diretamente entre Runtimes.
 
 ---
 
@@ -24,20 +24,23 @@
 
 | Tipo | Descrição | Acesso MCP | Acesso A2A |
 |------|-----------|------------|------------|
-| **Mesmo domínio** | MCPs/Agents do mesmo produto/time | Direto | Direto (com OAuth) |
+| **Mesmo domínio** | MCPs/Agents do mesmo produto/time | Via Gateway | Direto (com OAuth) |
 | **Domínio diferente (interno)** | MCPs/Agents de outros produtos/times | Via Gateway | Direto via Runtime + OAuth |
 | **Domínio diferente (externo)** | Serviços externos (3rd Party MCPs) | Via Gateway | Direto via Runtime + OAuth |
 
-### Por que usar Gateway para MCPs de domínios diferentes?
+> **Nota**: Todos os MCPs passam pelo Gateway para garantir ponto único de controle, auditoria e governança.
+
+### Por que usar Gateway para todos os MCPs?
 
 | Benefício | Descrição |
 |-----------|-----------|
-| **Controle de acesso** | OAuth scopes definem quais agents acessam quais MCPs |
-| **Auditoria** | CloudTrail registra todas as chamadas cross-domain |
-| **Governança** | Time de plataforma controla integrações entre produtos |
-| **Autenticação** | OAuth 2.0 (Cognito) para MCPs |
+| **Ponto único de controle** | Todas as chamadas MCP passam por um único ponto |
+| **Auditoria centralizada** | CloudTrail registra todas as chamadas MCP |
+| **Governança** | Time de plataforma controla todas as integrações |
+| **Autenticação** | OAuth 2.0 (Cognito) para todos os MCPs |
 | **Rate limiting** | Por target |
 | **Billing** | Por domínio |
+| **Simplicidade** | Um único padrão de acesso para todos os MCPs |
 
 ### Por que A2A não usa AgentCore Gateway?
 
@@ -76,9 +79,8 @@
 |--------|---------|-----------|------------------|-----------|
 | Usuário | Axway | User Token (OIDC) | Keycloak JWT | Axway → Keycloak JWKS |
 | Axway | Agent | User Token (propagado) | Keycloak JWT | Agent (opcional) |
-| Agent | MCP mesmo domínio | M2M OAuth | Cognito Client Credentials | MCP → Cognito JWKS |
 | Agent | AgentCore Gateway | M2M OAuth | Cognito Client Credentials | Gateway → Cognito JWKS |
-| Gateway | MCP domínio diferente | M2M OAuth | Cognito (interno) | MCP → Cognito JWKS |
+| Gateway | MCP (qualquer domínio) | M2M OAuth | Cognito (interno) | MCP → Cognito JWKS |
 | Gateway | MCP externo | OAuth Externo | AgentCore Identity | Serviço externo |
 | Agent | Agent (A2A) | M2M OAuth | Cognito Client Credentials | Agent → Cognito JWKS |
 
@@ -142,7 +144,7 @@ sequenceDiagram
 ### Visão Geral
 
 - **Agents**: Rodam no EKS (seu cluster Kubernetes)
-- **Todos os MCPs**: Acessados via AgentCore Gateway (mesmo domínio ou diferente)
+- **Todos os MCPs**: Acessados via AgentCore Gateway (ponto único de controle)
 - **A2A**: Comunicação externa via Axway (exposição) ou direta (consumo)
 
 ### Arquitetura
@@ -208,10 +210,10 @@ flowchart LR
 |-------|--------|---------|-----|--------------|
 | 1 | Agent EKS | Cognito | VPC Endpoint | Client Credentials |
 | 2 | Agent EKS | Gateway | VPC Endpoint | Cognito M2M Token |
-| 3a | Gateway | MCP interno | Runtime | Cognito M2M (interno) |
+| 3a | Gateway | MCP (qualquer domínio) | Runtime | Cognito M2M (interno) |
 | 3b | Gateway | 3rd Party MCP | Identity | OAuth Token do Parceiro |
 
-> **Nota**: MCPs internos (Runtime) usam Cognito M2M. MCPs externos (3rd Party) usam OAuth do parceiro via Identity.
+> **Nota**: Todos os MCPs (internos e externos) são acessados via Gateway. MCPs internos usam Cognito M2M, MCPs externos usam OAuth do parceiro via Identity.
 
 ---
 
@@ -292,8 +294,7 @@ flowchart LR
 | Aspecto | Cenário 1 (Agent no EKS) | Cenário 2 (Agent no Runtime) |
 |---------|--------------------------|------------------------------|
 | **Onde roda o Agent** | EKS (seu cluster) | AgentCore Runtime (AWS) |
-| **MCPs mesmo domínio** | AgentCore Runtime (direto) | AgentCore Runtime (direto) |
-| **MCPs domínio diferente** | Via Gateway | Via Gateway |
+| **MCPs (todos)** | Via Gateway | Via Gateway |
 | **Gerenciamento do Agent** | Você (K8s) | AWS (serverless) |
 | **Escalabilidade** | HPA/KEDA | Automática |
 | **Isolamento** | Pod/Namespace | MicroVM por sessão |
@@ -639,11 +640,13 @@ sequenceDiagram
 
 ### Matriz de Acesso
 
-| Agent | MCPs Mesmo Domínio (Direto) | MCPs Domínio Diferente (Gateway) |
-|-------|----------------------------|----------------------------------|
-| crm-agent | mcp-crm-customers, mcp-crm-leads | finance-invoices, hr-employees, 3rdparty-mcp |
-| finance-agent | mcp-finance-invoices, mcp-finance-payments | crm-customers, 3rdparty-mcp, jira-mcp |
-| hr-agent | mcp-hr-employees, mcp-hr-payroll | finance-payments, 3rdparty-mcp |
+| Agent | MCPs via Gateway |
+|-------|------------------|
+| crm-agent | mcp-crm-customers, mcp-crm-leads, finance-invoices, hr-employees, 3rdparty-mcp |
+| finance-agent | mcp-finance-invoices, mcp-finance-payments, crm-customers, 3rdparty-mcp, jira-mcp |
+| hr-agent | mcp-hr-employees, mcp-hr-payroll, finance-payments, 3rdparty-mcp |
+
+> **Nota**: Todos os MCPs são acessados via Gateway. O controle de acesso é feito via OAuth scopes no Cognito.
 
 ---
 
@@ -672,15 +675,17 @@ sequenceDiagram
     end
     
     rect rgb(227, 242, 253)
-        Note over Agent,MCP_CRM: 2 - MCP SAME DOMAIN M2M
+        Note over Agent,MCP_CRM: 2 - MCP via Gateway M2M
         Agent->>Cognito: Client Credentials
         Cognito-->>Agent: M2M Token
-        Agent->>MCP_CRM: tools/call + M2M Token
-        MCP_CRM-->>Agent: CRM Data
+        Agent->>Gateway: invoke_gateway crm-customers + M2M Token
+        Gateway->>MCP_CRM: tools/call
+        MCP_CRM-->>Gateway: CRM Data
+        Gateway-->>Agent: Result
     end
     
     rect rgb(255, 243, 224)
-        Note over Agent,MCP_FIN: 3 - MCP DIFFERENT DOMAIN Gateway
+        Note over Agent,MCP_FIN: 3 - MCP OTHER DOMAIN via Gateway
         Agent->>Gateway: invoke_gateway + M2M Token
         Gateway->>MCP_FIN: tools/call
         MCP_FIN-->>Gateway: Finance Data
@@ -710,26 +715,23 @@ sequenceDiagram
 
 ---
 
-## Comparação: Acesso Direto vs Gateway Obrigatório
+## Comparação: Gateway Obrigatório
 
-| Aspecto | Acesso Direto (mesmo domínio) | Gateway Obrigatório |
-|---------|-------------------------------|---------------------|
-| **MCP mesmo domínio** | Agent → MCP (direto) | Agent → Gateway → MCP |
-| **MCP domínio diferente** | Agent → Gateway → MCP | Agent → Gateway → MCP |
-| **Auditoria** | Parcial (só cross-domain) | Completa (todos os MCPs) |
-| **Ponto de controle** | Distribuído | Centralizado |
-| **Latência** | Menor (mesmo domínio) | Maior (hop adicional) |
-| **Complexidade** | Maior (2 padrões) | Menor (1 padrão) |
+| Aspecto | Descrição |
+|---------|-----------|
+| **Todos os MCPs** | Agent → Gateway → MCP |
+| **Auditoria** | Completa (todos os MCPs) |
+| **Ponto de controle** | Centralizado |
+| **Padrão único** | Simplicidade operacional |
 
-### Quando usar Gateway Obrigatório
+### Benefícios do Gateway Obrigatório
 
-| Cenário | Recomendação |
-|---------|--------------|
-| Compliance rigoroso (SOX, PCI) | ✅ Gateway obrigatório |
-| Auditoria centralizada | ✅ Gateway obrigatório |
-| Múltiplos times/domínios | ✅ Gateway obrigatório |
-| Baixa latência crítica | ❌ Acesso direto (mesmo domínio) |
-| Simplicidade operacional | ✅ Gateway obrigatório |
+| Cenário | Benefício |
+|---------|-----------|
+| Compliance rigoroso (SOX, PCI) | ✅ Auditoria centralizada |
+| Múltiplos times/domínios | ✅ Governança unificada |
+| Simplicidade operacional | ✅ Um único padrão de acesso |
+| Controle de custos | ✅ Billing centralizado por domínio |
 
 ---
 
@@ -779,31 +781,31 @@ sequenceDiagram
 
 | Tipo | Caminho | Autenticação |
 |------|---------|--------------|
-| **MCP mesmo domínio** | Agent → MCP (direto) | OAuth M2M (Cognito) |
-| **MCP domínio diferente** | Agent → Gateway → MCP | OAuth M2M (Cognito) |
+| **MCP (qualquer domínio)** | Agent → Gateway → MCP | OAuth M2M (Cognito) |
 | **MCP externo** | Agent → Gateway → Identity → Serviço | OAuth Externo |
 | **A2A** | Agent → Agent (direto) | OAuth M2M (Cognito) |
 
 ### Garantias
 
 - ✅ Comunicação 100% privada via VPC Endpoints
-- ✅ Auditoria completa via CloudTrail
-- ✅ Controle de acesso por domínio via OAuth scopes
+- ✅ Auditoria completa via CloudTrail (todos os MCPs via Gateway)
+- ✅ Controle de acesso centralizado via OAuth scopes
 - ✅ Rastreabilidade E2E via Correlation ID
 - ✅ Isolamento por sessão (MicroVM no Runtime)
+- ✅ Ponto único de controle para todos os MCPs
 
 ---
 
-## Diagramas Alternativos: Todos os MCPs via Gateway
+## Diagramas: Todos os MCPs via Gateway
 
-Neste modelo, **todos os MCPs são acessados exclusivamente via AgentCore Gateway**, mesmo os do mesmo domínio. Isso garante:
+Neste modelo, **todos os MCPs são acessados exclusivamente via AgentCore Gateway**. Isso garante:
 - Ponto único de controle e auditoria
 - Políticas centralizadas para todos os MCPs
 - Simplificação da arquitetura de rede
 
 ---
 
-### Alternativa 1: Agent no Runtime - Gateway Obrigatório
+### Cenário 1: Agent no Runtime - Gateway Obrigatório
 
 Cenário serverless onde todos os MCPs passam pelo Gateway.
 
@@ -891,7 +893,7 @@ sequenceDiagram
 
 ---
 
-### Alternativa 2: Agent no EKS - Gateway Obrigatório
+### Cenário 2: Agent no EKS - Gateway Obrigatório
 
 Cenário híbrido com Agent no EKS onde todos os MCPs passam pelo Gateway via VPC Endpoint.
 
@@ -1003,7 +1005,6 @@ sequenceDiagram
 
 | Tipo de Comunicação | Via Gateway | Autenticação |
 |---------------------|-------------|--------------|
-| MCP mesmo domínio | SIM | Cognito M2M |
-| MCP domínio diferente | SIM | Cognito M2M |
-| MCP externo | SIM | OAuth via Identity |
+| MCP (qualquer domínio) | **SIM** | Cognito M2M |
+| MCP externo | **SIM** | OAuth via Identity |
 | A2A Agent para Agent | NÃO - direto | Cognito M2M |
