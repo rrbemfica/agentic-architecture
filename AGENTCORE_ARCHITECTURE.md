@@ -1008,3 +1008,163 @@ sequenceDiagram
 | MCP (qualquer domínio) | **SIM** | Cognito M2M |
 | MCP externo | **SIM** | OAuth via Identity |
 | A2A Agent para Agent | NÃO - direto | Cognito M2M |
+
+
+---
+
+## Multi-Region Latency Considerations
+
+### Scenario: Distributed Architecture Brazil + USA
+
+| Component | Region | Location |
+|-----------|--------|----------|
+| **Agents (EKS)** | sa-east-1 | São Paulo |
+| **Microservices (EKS)** | sa-east-1 | São Paulo |
+| **AgentCore Runtime** | us-east-1 | N. Virginia |
+| **AgentCore Gateway** | us-east-1 | N. Virginia |
+| **MCPs (AgentCore Runtime)** | us-east-1 | N. Virginia |
+
+### Estimated Latency per Segment
+
+| Segment | Latency |
+|---------|---------|
+| São Paulo ↔ N. Virginia | ~100-150ms RTT |
+| Within sa-east-1 | ~1-5ms RTT |
+| Within us-east-1 | ~1-5ms RTT |
+
+---
+
+### Diagram: Cross-Region Roundtrip
+
+```mermaid
+sequenceDiagram
+    participant User as User - Brazil
+    participant Agent as Agent EKS - sa-east-1
+    participant Gateway as AgentCore Gateway - us-east-1
+    participant MCP as MCP Runtime - us-east-1
+    participant Microservice as Microservice EKS - sa-east-1
+    
+    Note over User,Microservice: ESTIMATED LATENCIES PER SEGMENT
+    
+    rect rgb(255, 243, 224)
+        Note over User,Agent: Brazil - Low latency ~5-20ms
+        User->>Agent: Request
+    end
+    
+    rect rgb(255, 205, 210)
+        Note over Agent,Gateway: Cross-Region ~100-150ms RTT
+        Agent->>Gateway: invoke_gateway + M2M Token
+        Note right of Agent: 🌐 São Paulo → N. Virginia
+    end
+    
+    rect rgb(200, 230, 201)
+        Note over Gateway,MCP: Same Region ~1-5ms
+        Gateway->>MCP: tools/call
+    end
+    
+    rect rgb(255, 205, 210)
+        Note over MCP,Microservice: Cross-Region ~100-150ms RTT
+        MCP->>Microservice: API Call
+        Note right of MCP: 🌐 N. Virginia → São Paulo
+        Microservice-->>MCP: Response
+        Note left of Microservice: 🌐 São Paulo → N. Virginia
+    end
+    
+    rect rgb(200, 230, 201)
+        Note over Gateway,MCP: Same Region ~1-5ms
+        MCP-->>Gateway: Result
+    end
+    
+    rect rgb(255, 205, 210)
+        Note over Gateway,Agent: Cross-Region ~100-150ms RTT
+        Gateway-->>Agent: Result
+        Note left of Gateway: 🌐 N. Virginia → São Paulo
+    end
+    
+    rect rgb(200, 230, 201)
+        Note over Agent,User: Brazil - Low latency ~5-20ms
+        Agent-->>User: Response
+    end
+```
+
+---
+
+### Diagram: Total Latency Breakdown per MCP Call
+
+```mermaid
+sequenceDiagram
+    participant Agent as Agent - sa-east-1
+    participant Gateway as Gateway - us-east-1
+    participant MCP as MCP - us-east-1
+    participant Microservice as Microservice - sa-east-1
+    
+    Note over Agent,Microservice: SINGLE MCP CALL: ~300-450ms TOTAL
+    
+    rect rgb(255, 205, 210)
+        Note right of Agent: Hop 1: ~100-150ms
+        Agent->>Gateway: invoke_gateway
+    end
+    
+    rect rgb(200, 230, 201)
+        Note right of Gateway: Hop 2: ~1-5ms
+        Gateway->>MCP: tools/call
+    end
+    
+    rect rgb(255, 205, 210)
+        Note right of MCP: Hop 3: ~100-150ms
+        MCP->>Microservice: API Call
+    end
+    
+    rect rgb(200, 230, 201)
+        Note right of Microservice: Processing: ~10-50ms
+        Microservice->>Microservice: Business Logic
+    end
+    
+    rect rgb(255, 205, 210)
+        Note left of Microservice: Hop 4: ~100-150ms
+        Microservice-->>MCP: Response
+    end
+    
+    rect rgb(200, 230, 201)
+        Note left of MCP: Hop 5: ~1-5ms
+        MCP-->>Gateway: Result
+    end
+    
+    rect rgb(255, 205, 210)
+        Note left of Gateway: Hop 6: ~100-150ms
+        Gateway-->>Agent: Result
+    end
+```
+
+---
+
+### Table: Latency Impact per Call Pattern
+
+| Pattern | MCP Calls | Cross-Region RTTs | Total Latency |
+|---------|-----------|-------------------|---------------|
+| Sequential | 1 | 2x RTT (Agent↔Gateway + MCP↔Microservice) | ~300-450ms |
+| Sequential | 3 | 6x RTT | ~900-1350ms |
+| Sequential | 5 | 10x RTT | ~1500-2250ms |
+| **Parallel** | 3 | **2x RTT** | **~300-450ms** |
+| **Parallel** | 5 | **2x RTT** | **~300-450ms** |
+
+---
+
+### Recommendations to Minimize Latency
+
+| Strategy | Description | Reduction |
+|----------|-------------|-----------|
+| **Parallel calls** | Execute independent MCPs in parallel | Up to 70% |
+| **Batch operations** | Group multiple operations in a single call | 50-70% |
+| **Local cache** | Cache frequent data in Agent | Variable |
+| **Colocate MCPs with Microservices** | Run MCPs in sa-east-1 when available | ~50% |
+
+### Trade-offs: Architecture Decisions
+
+| Scenario | Agent→Gateway | MCP→Microservice | Total per Call | Recommendation |
+|----------|---------------|------------------|----------------|----------------|
+| Current (MCPs in us-east-1) | ~100-150ms | ~100-150ms | ~300-450ms | Use parallel calls |
+| Future (MCPs in sa-east-1) | ~100-150ms | ~1-5ms | ~200-310ms | Better for microservice-heavy workloads |
+| All in us-east-1 | ~1-5ms | ~1-5ms | ~10-20ms | Best latency, but users in Brazil affected |
+
+> **Note**: The main latency bottleneck is the double cross-region hop: Agent→Gateway (sa-east-1→us-east-1) and MCP→Microservice (us-east-1→sa-east-1). Parallel calls are essential to minimize total response time.
