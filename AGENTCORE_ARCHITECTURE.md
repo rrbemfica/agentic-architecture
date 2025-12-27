@@ -403,6 +403,8 @@ sequenceDiagram
 
 Trocar o user token por um M2M token que já contém claims do usuário no campo `act` (actor).
 
+> **⚠️ Importante**: Amazon Cognito **não suporta** RFC 8693 (OAuth 2.0 Token Exchange). Para utilizar esta abordagem, é necessário um Identity Provider que suporte o grant type `urn:ietf:params:oauth:grant-type:token-exchange`, como **Keycloak**.
+
 #### Vantagens do Token Exchange
 
 | Aspecto | Benefício |
@@ -420,7 +422,6 @@ sequenceDiagram
     participant Keycloak as Keycloak
     participant Axway as Axway
     participant Agent as CRM Agent
-    participant Cognito as Cognito
     participant Gateway as Gateway
     participant MCP as MCP Finance
     participant Logs as CloudWatch
@@ -434,30 +435,31 @@ sequenceDiagram
     Axway->>Keycloak: Validate Token
     Axway->>Agent: Forward + Bearer user_token
     
-    Note over Agent,Cognito: 3 - TOKEN EXCHANGE RFC 8693
-    Agent->>Cognito: POST /oauth2/token
-    Note right of Agent: grant_type: token-exchange
+    Note over Agent,Keycloak: 3 - TOKEN EXCHANGE RFC 8693 via Keycloak
+    Agent->>Keycloak: POST /realms/{realm}/protocol/openid-connect/token
+    Note right of Agent: grant_type: urn:ietf:params:oauth:grant-type:token-exchange
     Note right of Agent: subject_token: user_token
-    Note right of Agent: subject_token_type: jwt
+    Note right of Agent: subject_token_type: urn:ietf:params:oauth:token-type:access_token
+    Note right of Agent: requested_token_type: urn:ietf:params:oauth:token-type:access_token
     Note right of Agent: scope: gateway/invoke mcp-finance/read
     
-    Cognito->>Keycloak: Validate user_token via JWKS
-    Keycloak-->>Cognito: Valid Token
-    Cognito->>Cognito: Extract user claims
-    Cognito->>Cognito: Generate M2M Token with actor claim
-    Cognito-->>Agent: M2M Token with user claims
-    Note right of Cognito: Token contains:
-    Note right of Cognito: sub: crm-agent
-    Note right of Cognito: act: sub:user123
-    Note right of Cognito: user_email: joao@emp.com
-    Note right of Cognito: scope: gateway/invoke
+    Keycloak->>Keycloak: Validate user_token
+    Keycloak->>Keycloak: Extract user claims
+    Keycloak->>Keycloak: Generate M2M Token with actor claim
+    Keycloak-->>Agent: M2M Token with user claims
+    Note right of Keycloak: Token contains:
+    Note right of Keycloak: sub: crm-agent
+    Note right of Keycloak: act: sub:user123
+    Note right of Keycloak: user_email: joao@emp.com
+    Note right of Keycloak: scope: gateway/invoke
     
     Note over Agent,MCP: 4 - AGENT CALLS GATEWAY
-    Agent->>Gateway: invoke_gateway + Bearer exchanged_token
+    Agent->>Gateway: invoke_gateway mcp-finance + Bearer exchanged_token
     Note right of Agent: X-Correlation-Id: uuid-xxx
     
-    Gateway->>Cognito: Validate Token
-    Cognito-->>Gateway: Valid Token
+    Gateway->>Keycloak: Validate Token via JWKS
+    Keycloak-->>Gateway: Valid Token
+    Gateway->>Gateway: Verify scope mcp-finance/read
     Gateway->>Gateway: Extract actor claim - user123
     Gateway->>Logs: Audit Log user123 via crm-agent
     
@@ -465,8 +467,8 @@ sequenceDiagram
     Gateway->>MCP: tools/call get_invoices + Bearer gateway_token
     Note right of Gateway: Token contains act claim with user
     
-    MCP->>Cognito: Validate Token
-    Cognito-->>MCP: Valid Token
+    MCP->>Keycloak: Validate Token via JWKS
+    Keycloak-->>MCP: Valid Token
     MCP->>MCP: Extract actor claim - original user
     MCP->>MCP: Apply policies by user
     MCP->>Logs: Audit Log user123 via crm-agent called get_invoices
@@ -486,7 +488,8 @@ sequenceDiagram
 | **Complexidade** | Simples de implementar | Requer suporte a RFC 8693 |
 | **Padrão** | Convenção customizada | RFC 8693 OAuth 2.0 |
 | **Validação** | Confiança no caller | Verificação criptográfica |
-| **Suporte Cognito** | Nativo | Requer configuração adicional |
+| **Suporte Cognito** | Nativo | ❌ Não suportado |
+| **Suporte Keycloak** | Nativo | ✅ Suportado nativamente |
 | **Overhead** | Baixo | Chamada extra ao IdP |
 
 ### Quando usar cada abordagem
